@@ -1,11 +1,19 @@
 spring-springmvc
 ===
 ## 项目介绍
-在之前的mybatis整合项目之后，新增日志、简单集成shiro，之前的代码不予展示与介绍，想了解的请参考mybatis整合项目
+在之前的shiro整合项目之后，更加完善shiro功能，之前的代码不予展示与介绍，想了解的请参考shiro整合项目
+
+## 功能新增
+- 用户注册
+- 登录错误次数限制(使用redis作缓存)
+- shiro注解配置
+- DTO引入
+- 数据校验(使用hibernate validation)
+- SpringMVC统一异常处理配置
 
 ## 项目结构
 ### java：代码
-- controller:控制层，ShiroUserController，主要包含登录及几个页面跳转
+- controller:控制层，以下展示注册和登录功能
 ```
     @RequestMapping("/login")
     public String login(ShiroUser shiroUser, HttpServletRequest request) {
@@ -15,40 +23,105 @@ spring-springmvc
             subject.login(token);//会跳到我们自定义的realm中
             request.getSession().setAttribute("user", shiroUser);
             log.info(shiroUser.getUsername() + "登录");
-            return "success";
+            return "user/success";
         } catch (UnknownAccountException e) {
-            request.getSession().setAttribute("user", shiroUser);
-            return "login";
+            return "user/login";
         } catch (IncorrectCredentialsException e) {
-            request.getSession().setAttribute("user", shiroUser);
-            request.setAttribute("error", "用户名或密码错误！");
-            return "login";
+            request.setAttribute("error", "用户名或密码错误");
+            return "user/login";
+        } catch (ExcessiveAttemptsException e) {
+            request.setAttribute("error", "输入密码错误太多次,请稍后再试！");
+            return "user/login";
+        } catch (Exception e) {
+            request.setAttribute("error", "未知错误");
+            return "user/login";
+        }
+    }
+    
+    @RequestMapping(value = "/register", method = RequestMethod.POST)
+    public String register(Model model,
+                           @Valid @ModelAttribute ShiroUserDTO shiroUserDTO, BindingResult bindingResult) {
+        //数据校验
+        if (bindingResult.hasErrors()) {
+            List<ObjectError> allErrors = bindingResult.getAllErrors();
+            for (ObjectError objectError : allErrors) {
+                //输出错误信息
+                System.out.println(objectError.getDefaultMessage());
+            }
+            model.addAttribute("error", "填入信息有误");
+            model.addAttribute("user", shiroUserDTO);
+            return "/user/register";
+        }
+        if (shiroUserService.getByUsername(shiroUserDTO.getUsername()) == null) {
+            shiroUserService.insertUser(shiroUserDTO);
+            return "redirect:/";
+        } else {
+            model.addAttribute("user", shiroUserDTO);
+            model.addAttribute("error", "userName has been registered!");
+            return "/user/register";
         }
     }
 ```    
-- service:业务处理层，包含一个impl包，Service以接口类型存在，impl包下存放Service接口的实现类,ShiroUserServiceImpl包含用户、角色、权限相关操作
+- service:业务处理层，以下展示新增用户功能，包含数据转换(DTO到Entity)和密码加密(shiro加密策略)
  ```
- @Service("shiroUserService")
-public class ShiroUserServiceImpl implements ShiroUserService {
-    @Resource
-    private ShiroUserMapper shiroUserMapper;
-
-    public ShiroUser getByUsername(String username) {
-        return shiroUserMapper.getByUsername(username);
+ public void insertUser(ShiroUserDTO shiroUserDTO) {
+        ShiroUser shiroUser = converToAddress(shiroUserDTO);
+        shiroUserMapper.insert(shiroUser);
+    }
+  
+ private ShiroUser converToAddress(ShiroUserDTO shiroUserDTO) {
+        ShiroUser shiroUser = new ShiroUser();
+        BeanUtils.copyProperties(shiroUserDTO, shiroUser);
+        passwordEncrypt(shiroUser);
+        shiroUser.setCreatetime(new Date());
+        shiroUser.setRoleId(1);
+        return shiroUser;
     }
 
-    public Set<String> getRoles(String username) {
-        return shiroUserMapper.getRoles(username);
+  private void passwordEncrypt(ShiroUser shiroUser) {
+        String username = shiroUser.getUsername();
+        String password = shiroUser.getPassword();
+        String salt2 = new SecureRandomNumberGenerator().nextBytes().toHex();
+        int hashIterations = 3;
+        String algorithmName = "md5";
+        SimpleHash hash = new SimpleHash(algorithmName, password,
+                username + salt2, hashIterations);
+        String encodedPassword = hash.toHex();
+        shiroUser.setSalt(salt2);
+        shiroUser.setPassword(encodedPassword);
     }
-
-    public Set<String> getPermissions(String username) {
-        return shiroUserMapper.getPermissions(username);
-    }
-}
  ```
 - dao:数据库交互层
-- model:实体对象层
-- realm: 自定义Realm(shiro相关)
+- entity:实体对象层,以下展示数据校验
+```
+@Data
+public class ShiroUser {
+    private Integer id;
+    
+    @NotNull(message = "用户名不能为空")
+    @Size(min = 3, max = 16, message = "用户名长度必须介于3-16个字符之间")
+    
+    private String username;
+    
+    @NotNull(message = "密码不能为空")
+    @Size(min = 3, max = 16, message = "{密码长度必须介于3-16个字符之间")
+    private String password;
+    
+    private Date createtime;
+    
+    private Date lasttime;
+    
+    @Email(message = "请输入正确的邮箱")
+    private String email;
+    
+    private String sex;
+    
+    private String salt;
+    
+    private Integer roleId;
+}
+```
+- realm:自定义Realm(shiro相关)，以下加入了加密相关代码
 ```
 public class MyRealm extends AuthorizingRealm {
 
@@ -59,7 +132,6 @@ public class MyRealm extends AuthorizingRealm {
     @Override
     protected AuthorizationInfo doGetAuthorizationInfo(
             PrincipalCollection principals) {
-
         String username = (String) principals.getPrimaryPrincipal(); //获取用户名
         SimpleAuthorizationInfo authorizationInfo = new SimpleAuthorizationInfo();
         authorizationInfo.setRoles(shiroUserService.getRoles(username));
@@ -74,11 +146,48 @@ public class MyRealm extends AuthorizingRealm {
         String username = (String) token.getPrincipal(); // 获取用户名
         ShiroUser shiroUser = shiroUserService.getByUsername(username);
         if (shiroUser != null) {
-            AuthenticationInfo authcInfo = new SimpleAuthenticationInfo(shiroUser.getUsername(), shiroUser.getPassword(), "myRealm");
+            SimpleAuthenticationInfo authcInfo = new SimpleAuthenticationInfo(shiroUser.getUsername(), shiroUser.getPassword(), "myRealm");
+            //通过SimpleAuthenticationInfo的credentialsSalt设置盐，HashedCredentialsMatcher会自动识别这个盐。
+            authcInfo.setCredentialsSalt(ByteSource.Util.bytes(shiroUser.getUsername() + shiroUser.getSalt()));
             return authcInfo;
         } else {
             return null;
         }
+    }
+}
+```
+- constants:常量类包
+- dto:DTO对象包
+- credentials:处理重试次数类包
+```
+public class RetryLimitHashedCredentialsMatcher extends HashedCredentialsMatcher {
+
+    @Autowired
+    private RedisCache redisCache;
+
+
+    //匹配用户输入的token的凭证（未加密）与系统提供的凭证（已加密）
+    @Override
+    public boolean doCredentialsMatch(AuthenticationToken token, AuthenticationInfo info) {
+        String username = (String) token.getPrincipal();
+        //retry count + 1
+        //AtomicInteger是一个提供原子操作的Integer类，通过线程安全的方式操作加减。
+        AtomicInteger retryCount = redisCache.getCache(Constants.USER + username, AtomicInteger.class);
+        if (retryCount == null) {
+            retryCount = new AtomicInteger(0);
+        }
+        //增长
+        if (retryCount.incrementAndGet() > 5) {
+            //if retry count > 5 throw
+            throw new ExcessiveAttemptsException();
+        }
+        redisCache.putCacheWithExpireTime(Constants.USER + username, retryCount, 600);
+        boolean matches = super.doCredentialsMatch(token, info);
+        if (matches) {
+            //clear retry count
+            redisCache.deleteCache(Constants.USER + username);
+        }
+        return matches;
     }
 }
 ```
@@ -90,117 +199,91 @@ public class MyRealm extends AuthorizingRealm {
 - spring-mybatis.xml：mybatis相关配置文件
 - spring-shiro.xml:shiro配置相关文件
 ```
-   <!-- 自定义Realm -->
-    <bean id="myRealm" class="com.py.realm.MyRealm"/>
-
-    <!-- 安全管理器 -->
-    <bean id="securityManager" class="org.apache.shiro.web.mgt.DefaultWebSecurityManager">
-        <property name="realm" ref="myRealm"/>
+    <!-- 凭证匹配器 -->
+    <bean id="credentialsMatcher" class="com.py.credentials.RetryLimitHashedCredentialsMatcher">
+        <!--指定散列算法为md5，需要和生成密码时的一样-->
+        <property name="hashAlgorithmName" value="md5"/>
+        <!--散列迭代次数，需要和生成密码时的一样-->
+        <property name="hashIterations" value="3"/>
+        <!--表示是否存储散列后的密码为16进制，需要和生成密码时的一样，默认是base64-->
+        <property name="storedCredentialsHexEncoded" value="true"/>
     </bean>
 
-    <!--自定义退出路径-->
-    <bean id="logout1" class="org.apache.shiro.web.filter.authc.LogoutFilter">
-        <property name="redirectUrl" value="/shiro/user/index"/>
+    <!-- 自定义Realm -->
+    <bean id="myRealm" class="com.py.realm.MyRealm">
+        <property name="credentialsMatcher" ref="credentialsMatcher"/>
     </bean>
-
-    <!-- Shiro过滤器 -->
-    <bean id="shiroFilter" class="org.apache.shiro.spring.web.ShiroFilterFactoryBean">
-        <!-- Shiro的核心安全接口,这个属性是必须的 -->
-        <property name="securityManager" ref="securityManager"/>
-        <!-- 身份认证失败，则跳转到登录页面的配置 -->
-        <property name="loginUrl" value="/shiro/user/login"/>
-        <!-- 权限认证失败，则跳转到指定页面 -->
-        <property name="unauthorizedUrl" value="/shiro/user/unauthorized"/>
-        <!-- Shiro连接约束配置,即过滤链的定义 -->
-        <property name="filterChainDefinitions">
-            <value>
-                /shiro/user/logout = logout <!--与操作指令key(logout)对应-->
-                /shiro/user/login=anon  <!--登录不拦截-->
-                /shiro/user/person*=authc  <!--表示需认证才能使用-->
-                <!--注意URL Pattern里用到的是两颗星,这样才能实现任意层次的全匹配-->
-                /shiro/user/student*/**=roles[student]  <!--访问需要student角色-->
-                <!--多参时必须加上引号,且参数之间用逗号分割-->
-                /shiro/user/teacher*/**=perms["user:create"] <!--访问需要user:create权限-->
-            </value>
+    
+     <!--Spring MVC统一异常处理(主要处理shiro注解(如@RequiresPermissions)引发的异常)-->
+    <bean class="org.springframework.web.servlet.handler.SimpleMappingExceptionResolver">
+        <property name="exceptionMappings">
+            <props>
+                <!--未登录-->
+                <prop key="org.apache.shiro.authz.UnauthenticatedException">
+                    redirect:/user/login
+                </prop>
+                <!--未授权-->
+                <prop key="org.apache.shiro.authz.UnauthorizedException">
+                    redirect:/user/login
+                </prop>
+            </props>
         </property>
-        <property name="filters">
-            <map>
-                <entry key="logout" value-ref="logout1"/> <!--操作指令(logout)与过滤器(LogoutFilter拦截器id)对应-->
-            </map>
-        </property>
+        <!--默认跳转页面-->
+        <property name="defaultErrorView" value="unauthorized"/>
+    </bean>
+```
+- db.properties：数据库相关参数配置
+- log4j.properties：日志相关参数配置
+- mapping:存放mybatis映射文件，以UserMapper.xml为例
+- redis.properties:redis相关参数配置
+```
+#redis config
+redis.pool.maxTotal=100
+redis.pool.maxIdle=10
+redis.pool.maxWaitMillis=5000
+redis.pool.testOnBorrow=true
+redis.pool.maxActive= 100
+redis.pool.maxWait= 3000
+
+
+#redis ip和端口号
+redis.ip=127.0.0.1
+redis.port=6379
+redis.pass=
+```
+- spring-redis.xml:redis相关配置
+```
+ <!-- Redis 配置 -->
+    <bean id="jedisPoolConfig" class="redis.clients.jedis.JedisPoolConfig">
+        <property name="maxTotal" value="${redis.pool.maxTotal}"/>
+        <property name="maxIdle" value="${redis.pool.maxIdle}"/>
+        <property name="maxWaitMillis" value="${redis.pool.maxWaitMillis}"/>
+        <property name="testOnBorrow" value="${redis.pool.testOnBorrow}"/>
     </bean>
 
-    <!-- 保证实现了Shiro内部lifecycle函数的bean执行 -->
-    <bean id="lifecycleBeanPostProcessor" class="org.apache.shiro.spring.LifecycleBeanPostProcessor"/>
+    <!-- redis单节点数据库连接配置 -->
+    <bean id="jedisConnectionFactory" class="org.springframework.data.redis.connection.jedis.JedisConnectionFactory">
+        <property name="hostName" value="${redis.ip}"/>
+        <property name="port" value="${redis.port}"/>
+        <property name="password" value="${redis.pass}"/>
+        <property name="poolConfig" ref="jedisPoolConfig"/>
+    </bean>
 
-    <!-- 开启Shiro注解 -->
+    <!-- redisTemplate配置，redisTemplate是对Jedis的对redis操作的扩展，有更多的操作，封装使操作更便捷 -->
+    <bean id="redisTemplate" class="org.springframework.data.redis.core.StringRedisTemplate">
+        <property name="connectionFactory" ref="jedisConnectionFactory"/>
+    </bean>
+```
+- spring-mvc-shiro.xml:shiro注解相关配置
+```
+ <!-- 开启Shiro注解 -->
     <bean class="org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator"
           depends-on="lifecycleBeanPostProcessor"/>
     <bean class="org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor">
         <property name="securityManager" ref="securityManager"/>
     </bean>
 ```
-- db.properties：数据库相关参数
-- log4j.properties：日志相关配置
-```
-###Log4j建议只使用四个级别，优先级从高到低分别是ERROR、WARN、INFO、DEBUG
-log4j.rootLogger=info, console, log, error
 
-###Console ###
-#输出到控制台
-log4j.appender.console = org.apache.log4j.ConsoleAppender
-log4j.appender.console.Target = System.out
-log4j.appender.console.layout = org.apache.log4j.PatternLayout
-log4j.appender.console.layout.ConversionPattern = %d %p[%C:%L]- %m%n
-
-### log ###
-#输出到文件
-log4j.appender.log = org.apache.log4j.DailyRollingFileAppender
-#日志编码设置
-log4j.appender.log.Encoding=UTF-8
-#文件路径(绝对路径)
-log4j.appender.log.File = E:/my_project/spring-springmvc-mybatis/logs/log.log
-#true为追加,false为覆盖，默认为true
-log4j.appender.log.Append = true
-
-#针对DEBUG级别以上的日志,低于DEBUG级别的日志不显示，这里设置为DEBUG没有意义
-log4j.appender.log.Threshold = DEBUG
-log4j.appender.log.DatePattern='.'yyyy-MM-dd
-
-#指定布局模式
-log4j.appender.log.layout = org.apache.log4j.PatternLayout
-log4j.appender.log.layout.ConversionPattern = %d %p[%c:%L] - %m%n
-
-
-### Error ###
-log4j.appender.error = org.apache.log4j.DailyRollingFileAppender
-log4j.appender.error.File = E:/my_project/spring-springmvc-mybatis/logs/error.log
-log4j.appender.error.Append = true
-log4j.appender.error.Threshold = ERROR 
-log4j.appender.error.DatePattern='.'yyyy-MM-dd
-log4j.appender.error.layout = org.apache.log4j.PatternLayout
-log4j.appender.error.layout.ConversionPattern =%d %p[%c:%L] - %m%n
-
-###控制台打印sql配置
-log4j.logger.com.ibatis=DEBUG
-log4j.logger.com.ibatis.common.jdbc.SimpleDataSource=DEBUG
-log4j.logger.com.ibatis.common.jdbc.ScriptRunner=DEBUG
-log4j.logger.com.ibatis.sqlmap.engine.impl.SqlMapClientDelegate=DEBUG
-log4j.logger.java.sql.Connection=DEBUG
-log4j.logger.java.sql.Statement=DEBUG
-log4j.logger.java.sql.PreparedStatement=DEBUG
-```
-- mapping:存放mybatis映射文件，以UserMapper.xml为例
-```
-<!--与dao中的接口类对应-->
-<mapper namespace="com.py.dao.UserMapper">
-
-    <select id="getById" resultType="com.py.model.User">
-        select id,username,password,email from user where id=#{id,jdbcType=BIGINT}
-    </select>
-
-</mapper>
-```
 ### webapp：web相关
 - web.xml
 ```
@@ -221,9 +304,7 @@ log4j.logger.java.sql.PreparedStatement=DEBUG
  ```
 ##　其他文件
 ### logs：日志存放
-- error.log:记录error级别日志
-- log.log:记录其他日志
-### deploy：部署文件，sql
+### deploy：部署文件(sql)
 - update.sql
 ```
 SET FOREIGN_KEY_CHECKS=0;
@@ -244,6 +325,7 @@ CREATE TABLE `t_permission` (
 -- ----------------------------
 INSERT INTO `t_permission` VALUES ('1', '1', 'user:create');
 INSERT INTO `t_permission` VALUES ('2', '2', 'user:update');
+INSERT INTO `t_permission` VALUES ('3', '1', 'user:update');
 
 -- ----------------------------
 -- Table structure for `t_role`
@@ -267,75 +349,57 @@ INSERT INTO `t_role` VALUES ('2', 'student');
 DROP TABLE IF EXISTS `t_user`;
 CREATE TABLE `t_user` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
-  `username` varchar(20) COLLATE utf8mb4_bin NOT NULL,
-  `password` varchar(20) COLLATE utf8mb4_bin NOT NULL,
+  `userName` varchar(20) NOT NULL,
+  `password` varchar(50) NOT NULL,
+  `createTime` date DEFAULT NULL,
+  `lastTime` datetime DEFAULT NULL,
+  `email` varchar(256) DEFAULT NULL,
+  `sex` enum('male','female') DEFAULT 'male',
+  `salt` varchar(50) DEFAULT NULL,
   `role_id` int(11) NOT NULL,
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+) ENGINE=InnoDB AUTO_INCREMENT=28 DEFAULT CHARSET=utf8;
 
 -- ----------------------------
 -- Records of t_user
 -- ----------------------------
-INSERT INTO `t_user` VALUES ('1', 'admin', 'admin', '1');
-INSERT INTO `t_user` VALUES ('2', 'test', '123456', '2');
-
--- ----------------------------
--- Table structure for `user`
--- ----------------------------
-DROP TABLE IF EXISTS `user`;
-CREATE TABLE `user` (
-  `id` bigint(20) NOT NULL AUTO_INCREMENT,
-  `username` varchar(32) COLLATE utf8mb4_bin NOT NULL,
-  `password` varchar(32) COLLATE utf8mb4_bin NOT NULL,
-  `email` varchar(32) COLLATE utf8mb4_bin NOT NULL,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
--- ----------------------------
--- Records of user
--- ----------------------------
-INSERT INTO `user` VALUES ('1', '张三', '123456', '835852265@qq.com');
+INSERT INTO `t_user` VALUES ('1', 'admin', '86c4604b628d4e91f5f2a2fed3f88430', '2017-08-28', null, '404158848@qq.com', 'male', '26753209835f4c837066d1cc7d9b46aa', '1');
+INSERT INTO `t_user` VALUES ('2', 'test', 'a038892c7b638aad0357adb52cabfb29', '2017-08-28', null, '404158848@qq.com', 'male', '6ced07d939407fb0449d92d9f17cfcd1', '2');
+INSERT INTO `t_user` VALUES ('3', 'test1', '4be958cccb89213221888f9ffca6969b', '2017-08-28', null, '404158848@qq.com', 'male', 'c95a278e52daf5166b1ffd6436cde7b7', '1');
 
 ```
 ### pom.xml：maven相关
 ```
-        <!-- 日志相关 begin-->
-        <!--不加会报异常：应该是某包的依赖
-               Property 'filters' threw exception; nested exception is java.lang.NoClassDefFoundError: org/apache/log4j/Priority-->
+        <!-- redis begin-->
         <dependency>
-            <groupId>log4j</groupId>
-            <artifactId>log4j</artifactId>
-            <version>${log4j.version}</version>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>2.8.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.data</groupId>
+            <artifactId>spring-data-redis</artifactId>
+            <version>1.6.4.RELEASE</version>
+        </dependency>
+        <dependency>
+            <groupId>com.dyuproject.protostuff</groupId>
+            <artifactId>protostuff-core</artifactId>
+            <version>1.0.8</version>
         </dependency>
 
-        <!--不加会报异常：应该是springframework.web的依赖
-            严重: Exception sending context destroyed event to listener instance of class org.springframework.web.context.ContextLoaderListener
-            java.lang.NoClassDefFoundError: org/slf4j/LoggerFactory-->
         <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-            <version>${slf4j.version}</version>
+            <groupId>com.dyuproject.protostuff</groupId>
+            <artifactId>protostuff-runtime</artifactId>
+            <version>1.0.8</version>
         </dependency>
+        <!-- redis end-->
 
-        <!--slf4j-log4j12:链接slf4j-api和log4j中间的适配器-->
+        <!--hibernate validation begin-->
+        <!-- spring 数据校验-->
         <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-log4j12</artifactId>
-            <version>${slf4j.version}</version>
+            <groupId>org.hibernate</groupId>
+            <artifactId>hibernate-validator</artifactId>
+            <version>5.0.2.Final</version>
         </dependency>
-        <!-- 日志格式化end -->
-
-        <!--shiro相关-->
-        <dependency>
-            <groupId>org.apache.shiro</groupId>
-            <artifactId>shiro-all</artifactId>
-            <version>${shiro-version}</version>
-        </dependency>
-
-        <!--lombok插件相关-->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>1.16.8</version>
-        </dependency>
+        <!--hibernate validation end-->
 ```
