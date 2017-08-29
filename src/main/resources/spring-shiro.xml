@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <!-- 凭证匹配器 -->
+    <bean id="credentialsMatcher" class="com.py.credentials.RetryLimitHashedCredentialsMatcher">
+        <!--指定散列算法为md5，需要和生成密码时的一样-->
+        <property name="hashAlgorithmName" value="md5"/>
+        <!--散列迭代次数，需要和生成密码时的一样-->
+        <property name="hashIterations" value="3"/>
+        <!--表示是否存储散列后的密码为16进制，需要和生成密码时的一样，默认是base64-->
+        <property name="storedCredentialsHexEncoded" value="true"/>
+    </bean>
+
+    <!-- 自定义Realm -->
+    <bean id="myRealm" class="com.py.realm.MyRealm">
+        <property name="credentialsMatcher" ref="credentialsMatcher"/>
+    </bean>
+
+    <!-- 安全管理器 -->
+    <bean id="securityManager" class="org.apache.shiro.web.mgt.DefaultWebSecurityManager">
+        <property name="realm" ref="myRealm"/>
+    </bean>
+
+    <!--自定义退出路径-->
+    <bean id="logout" class="org.apache.shiro.web.filter.authc.LogoutFilter">
+        <property name="redirectUrl" value="/user/index"/>
+    </bean>
+
+    <!-- Shiro过滤器 -->
+    <bean id="shiroFilter" class="org.apache.shiro.spring.web.ShiroFilterFactoryBean">
+        <!-- Shiro的核心安全接口,这个属性是必须的 -->
+        <property name="securityManager" ref="securityManager"/>
+        <!-- 身份认证失败，则跳转到登录页面的配置 -->
+        <property name="loginUrl" value="/user/login"/>
+        <!-- 权限认证失败，则跳转到指定页面 -->
+        <property name="unauthorizedUrl" value="/user/unauthorized"/>
+        <!-- Shiro连接约束配置,即过滤链的定义 -->
+        <property name="filterChainDefinitions">
+            <value>
+                /user/logout = logout <!--与操作指令key(logout)对应-->
+                /user/login = anon  <!--登录不拦截-->
+                /user/register = anon  <!--登录不拦截-->
+                /user/** = authc  <!--表示需认证才能使用-->
+                <!--注意URL Pattern里用到的是两颗星,这样才能实现任意层次的全匹配-->
+                /student*/** = roles[student]  <!--访问需要student角色-->
+                <!--多参时必须加上引号,且参数之间用逗号分割-->
+                /teacher*/** = perms["user:create"] <!--访问需要user:create权限-->
+            </value>
+        </property>
+        <property name="filters">
+            <map>
+                <entry key="logout" value-ref="logout"/> <!--操作指令(logout)与过滤器(LogoutFilter拦截器id)对应-->
+            </map>
+        </property>
+    </bean>
+
+    <!-- 保证实现了Shiro内部lifecycle函数的bean执行 -->
+    <bean id="lifecycleBeanPostProcessor" class="org.apache.shiro.spring.LifecycleBeanPostProcessor"/>
+    
+    <!--Spring MVC统一异常处理(主要处理shiro注解(如@RequiresPermissions)引发的异常)-->
+    <bean class="org.springframework.web.servlet.handler.SimpleMappingExceptionResolver">
+        <property name="exceptionMappings">
+            <props>
+                <!--未登录-->
+                <prop key="org.apache.shiro.authz.UnauthenticatedException">
+                    redirect:/user/login
+                </prop>
+                <!--未授权-->
+                <prop key="org.apache.shiro.authz.UnauthorizedException">
+                    redirect:/user/login
+                </prop>
+            </props>
+        </property>
+        <!--默认跳转页面-->
+        <property name="defaultErrorView" value="unauthorized"/>
+    </bean>
+</beans>
