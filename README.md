@@ -214,7 +214,7 @@ public class RetryLimitHashedCredentialsMatcher extends HashedCredentialsMatcher
 ### resources：配置文件
 - application.xml:spring配置文件入口，加载spring-config.xml
 - spring-mvc.xml:springmvc配置相关文件
-- spring-config.xml:加载其他集成的配置文件，这里加载spring-mybatis.xml、spring-shiro.xml和db.properties
+- spring-config.xml:加载其他集成的配置文件
 - spring-mybatis.xml：mybatis相关配置文件
 - spring-shiro.xml:shiro配置相关文件
 ```
